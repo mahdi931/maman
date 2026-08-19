@@ -15,7 +15,7 @@ from splusthon.tl.types import ChatBannedRights
 # =============================================
 # تنظیمات
 # =============================================
-SESSION_FILE = "baranam.txt"
+SESSION_FILE = "arian.txt"
 DATA_FILE = "group_data.json"
 OWNER_ID = 64427168  # ❗️حتماً آیدی عددی خودت را جایگزین کن
 
@@ -46,7 +46,6 @@ HELP_TEXT = """🤖 **راهنمای ربات مدیریت گروه**
 🛡 **مدیریت کاربران** (ادمین و مالک)
 • بن آیدی | رفع بن آیدی
 • سکوت آیدی | رفع سکوت آیدی
-• اخطار آیدی | حذف اخطار آیدی
 • سنجاق (ریپلای) | حذف سنجاق
 • لینک
 • آیدی (یا آیدی 123456)
@@ -54,12 +53,12 @@ HELP_TEXT = """🤖 **راهنمای ربات مدیریت گروه**
 🧹 **پاک‌سازی**
 • پاک تعداد(کمتر از 100)
 
-🔐 **قفل‌ها** (فقط مالک)
+🔐 **قفل‌ها** (فقط مالک) - همه قفل‌ها پیش‌فرض غیرفعال هستن
 برای فعال کردن: قفل لینک | قفل فوروارد | قفل فحش | ...
 برای غیرفعال کردن: بازکردن لینک | بازکردن فوروارد | ...
 
 📝 **فیلتر کلمات** (فقط مالک)
-• فیلتر کلمه | فیلتر کلمه بن | فیلتر کلمه سکوت
+• فیلتر کلمه | فیلتر کلمه سکوت
 • حذف فیلتر کلمه | لیست فیلتر | پاکسازی فیلتر
 
 🎉 **سرگرمی‌ها**
@@ -70,20 +69,21 @@ HELP_TEXT = """🤖 **راهنمای ربات مدیریت گروه**
 🛡 **ضد اسپم** (فقط مالک)
 • ضد اسپم روشن | ضد اسپم خاموش
 
-👑 **مدیریت مالک/ادمین** (فقط مالک)
-• افزودن مالک آیدی | حذف مالک آیدی
-• افزودن ادمین آیدی | حذف ادمین آیدی
+👑 **مدیریت مالک/ادمین** (فقط مالک اصلی)
+• افزودن مالک آیدی | حذف مالک آیدی (فقط OWNER_ID)
+• افزودن ادمین آیدی | حذف ادمین آیدی (مالک‌ها)
 
 📊 **آمار** (مالک)
 • آمار (نمایش آمار گروه)
 • آمار روشن | آمار خاموش
 
-💡 **نکته:** برای بن/سکوت/اخطار می‌توانید روی پیام کاربر ریپلای بزنید و فقط دستور را بفرستید (بدون آیدی).
+💡 **نکته:** برای بن/سکوت می‌توانید روی پیام کاربر ریپلای بزنید و فقط دستور را بفرستید (بدون آیدی).
 مثال: ریپلای روی پیام + «بن»"""
 
 # =============================================
 # ابزارهای داده
 # =============================================
+
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -98,6 +98,20 @@ def save_group(chat_id, group):
     groups[str(chat_id)] = group
     save_data(groups)
 
+groups = load_data()
+
+def migrate_group_data(group):
+    """بروزرسانی دیتای گروه‌های قدیمی"""
+    if "whitelist" not in group:
+        group["whitelist"] = []
+    # اگر کلید warnings وجود داشت حذفش کن
+    if "warnings" in group:
+        del group["warnings"]
+    # اضافه کردن OWNER_ID به لیست سفید اگر نیست
+    if OWNER_ID not in group["whitelist"]:
+        group["whitelist"].append(OWNER_ID)
+    return group
+
 def get_group(chat_id):
     chat_id = str(chat_id)
     if chat_id not in groups:
@@ -105,9 +119,9 @@ def get_group(chat_id):
             "enabled": False,
             "owners": [],
             "admins": [],
-            "locks": {v: False for v in LOCK_NAMES.values()},
+            "whitelist": [OWNER_ID],  # OWNER_ID از اول توی لیست سفید
+            "locks": {v: False for v in LOCK_NAMES.values()},  # همه قفل‌ها غیرفعال
             "filters": {},
-            "warnings": {},
             "mutes": {},
             "bans": [],
             "fun_enabled": {cat: True for cat in CATEGORIES},
@@ -118,9 +132,10 @@ def get_group(chat_id):
             "stats": {}
         }
         save_group(chat_id, groups[chat_id])
+    else:
+        # بروزرسانی گروه‌های قدیمی
+        groups[chat_id] = migrate_group_data(groups[chat_id])
     return groups[chat_id]
-
-groups = load_data()
 
 def is_owner(chat_id, user_id):
     group = get_group(chat_id)
@@ -129,6 +144,10 @@ def is_owner(chat_id, user_id):
 def is_admin(chat_id, user_id):
     group = get_group(chat_id)
     return is_owner(chat_id, user_id) or user_id in group["admins"]
+
+def is_whitelisted(chat_id, user_id):
+    group = get_group(chat_id)
+    return user_id in group["whitelist"]
 
 # ===== تابع API با aiohttp (کاملاً غیرهمگام) =====
 async def get_fun_api_async(category):
@@ -249,12 +268,13 @@ async def handle_all(event):
     # ===== استخراج دستور و هدف اولیه =====
     parts = text.split()
     cmd = parts[0] if parts else ""
-    target = extract_user_id(text)   # ابتدا از متن آیدی می‌گیریم
+    target = extract_user_id(text)
 
-    # ===== اگر دستور بن/سکوت/اخطار باشد و ریپلای شده باشد و آیدی در متن نباشد، از ریپلای آیدی می‌گیریم =====
-    if cmd in ("بن", "سکوت", "اخطار") and event.message.reply_to_msg_id and target is None:
+    # ===== اگر دستور نیاز به آیدی داره و ریپلای شده باشه =====
+    need_user_id_commands = ["بن", "سکوت", "رفع", "حذف", "افزودن"]
+    if cmd in need_user_id_commands and event.message.reply_to_msg_id and target is None:
         try:
-            reply_msg = await client.get_messages(chat_id, ids=event.message.reply_to_msg_id)
+            reply_msg = await client.get_messages(chat_id, ids=event.message.reply_to_msg_id) 
             if reply_msg and reply_msg.sender_id:
                 target = reply_msg.sender_id
         except:
@@ -281,29 +301,37 @@ async def handle_all(event):
     if not group["enabled"]:
         return
 
-    # بن
+    # بن - چک لیست سفید
     if sender_id in group["bans"]:
-        await event.delete()
-        return
-
-    # سکوت
-    mute_until_str = group["mutes"].get(str(sender_id))
-    if mute_until_str:
-        mute_until = datetime.fromisoformat(mute_until_str)
-        if datetime.now() < mute_until:
+        if is_whitelisted(chat_id, sender_id):
+            group["bans"].remove(sender_id)
+            save_group(chat_id, group)
+        else:
             await event.delete()
             return
-        else:
+
+    # سکوت - چک لیست سفید
+    mute_until_str = group["mutes"].get(str(sender_id))
+    if mute_until_str:
+        if is_whitelisted(chat_id, sender_id):
             del group["mutes"][str(sender_id)]
             save_group(chat_id, group)
+        else:
+            mute_until = datetime.fromisoformat(mute_until_str)
+            if datetime.now() < mute_until:
+                await event.delete()
+                return
+            else:
+                del group["mutes"][str(sender_id)]
+                save_group(chat_id, group)
 
     # آمار
     if group["stats_enabled"]:
         uid = str(sender_id)
         group["stats"][uid] = group["stats"].get(uid, 0) + 1
 
-    # ضد اسپم
-    if group["antispam"]["enabled"]:
+    # ضد اسپم - سکوت یک ساعته
+    if group["antispam"]["enabled"] and not is_whitelisted(chat_id, sender_id):
         now = datetime.now()
         spam_data = group["spam_data"]
         user_spam = spam_data.get(str(sender_id))
@@ -312,9 +340,9 @@ async def handle_all(event):
             if (now - first_time).seconds <= group["antispam"]["time"]:
                 user_spam["count"] += 1
                 if user_spam["count"] > group["antispam"]["max_msg"]:
-                    group["mutes"][str(sender_id)] = (now + timedelta(minutes=60)).isoformat()
+                    group["mutes"][str(sender_id)] = (now + timedelta(hours=1)).isoformat()
                     await event.delete()
-                    await event.reply(f"🔇 کاربر {sender_id} به دلیل اسپم 60 دقیقه سکوت شد.")
+                    await event.reply(f"🔇 کاربر {sender_id} به دلیل اسپم 1 ساعت سکوت شد.")
                     del group["spam_data"][str(sender_id)]
                     save_group(chat_id, group)
                     return
@@ -324,48 +352,66 @@ async def handle_all(event):
             group["spam_data"][str(sender_id)] = {"count": 1, "first_time": now.isoformat()}
         save_group(chat_id, group)
 
-    # قفل‌ها
+    # قفل‌ها - فقط پاک کردن (بدون سکوت)
     locks = group["locks"]
+    
+    # قفل لینک
     if locks["link"] and text and re.search(r'(https?://\S+|www\.\S+|\S+\.\S{2,})', text):
-        await event.delete()
-        return
+        if not is_whitelisted(chat_id, sender_id):
+            await event.delete()
+            save_group(chat_id, group)
+            return
+    
+    # قفل فوروارد
     if locks["forward"] and event.message.forward:
-        await event.delete()
-        return
-    # بهبود فحش‌یابی: چک کردن کلمه کامل
+        if not is_whitelisted(chat_id, sender_id):
+            await event.delete()
+            save_group(chat_id, group)
+            return
+    
+    # قفل فحش
     if locks["badword"] and text:
         words_in_message = text.split()
         if any(bw in words_in_message for bw in BAD_WORDS):
-            await event.delete()
-            return
+            if not is_whitelisted(chat_id, sender_id):
+                await event.delete()
+                save_group(chat_id, group)
+                return
+    
+    # قفل تکراری
     if locks["duplicate"] and text:
         last_entry = group["last_messages"].get(str(sender_id))
         if last_entry:
             last_text, last_time_str = last_entry
             last_time = datetime.fromisoformat(last_time_str)
             if last_text == text and (datetime.now() - last_time).seconds < 10:
-                await event.delete()
-                return
+                if not is_whitelisted(chat_id, sender_id):
+                    await event.delete()
+                    save_group(chat_id, group)
+                    return
         group["last_messages"][str(sender_id)] = (text, datetime.now().isoformat())
 
-    # فیلتر کلمات
+    # فیلتر کلمات - سکوت یک ساعته
     for word, punishment in group["filters"].items():
         if word in text:
-            if punishment == "ban":
+            if is_whitelisted(chat_id, sender_id):
+                break
+            
+            if punishment == "mute":
+                group["mutes"][str(sender_id)] = (datetime.now() + timedelta(hours=1)).isoformat()
+                await event.delete()
+                await event.reply(f"🔇 کاربر {sender_id} به دلیل کلمه ممنوعه «{word}» 1 ساعت سکوت شد.")
+            elif punishment == "ban":
                 if sender_id not in group["bans"]:
                     success, _ = await ban_user(client, chat_id, sender_id)
                     if success:
                         group["bans"].append(sender_id)
                 await event.delete()
                 await event.reply(f"🚫 کاربر {sender_id} به دلیل کلمه «{word}» بن شد.")
-            elif punishment == "mute":
+            else:
                 group["mutes"][str(sender_id)] = (datetime.now() + timedelta(hours=1)).isoformat()
                 await event.delete()
-                await event.reply(f"🔇 کاربر {sender_id} به دلیل کلمه «{word}» سکوت شد.")
-            elif punishment == "warn":
-                warns = group["warnings"].get(str(sender_id), 0) + 1
-                group["warnings"][str(sender_id)] = warns
-                await event.delete()
+                await event.reply(f"🔇 کاربر {sender_id} به دلیل کلمه ممنوعه «{word}» 1 ساعت سکوت شد.")
             save_group(chat_id, group)
             return
 
@@ -410,15 +456,14 @@ async def handle_all(event):
 
     # فقط ادمین/مالک از اینجا به بعد
     if not is_admin(chat_id, sender_id):
-        # اگر دستور نیاز به مجوز دارد، پیام خطا
-        if text and cmd in ("بن", "سکوت", "اخطار", "سنجاق", "حذف", "لینک",
+        if text and cmd in ("بن", "سکوت", "سنجاق", "حذف", "لینک",
                              "قفل", "بازکردن", "فیلتر", "لیست", "پاکسازی",
                              "فعال", "غیرفعال", "ضد", "افزودن", "آمار"):
             await event.reply("⛔ شما دسترسی لازم برای این دستور را ندارید.")
         return
 
-    # اعتبارسنجی دستورات نیازمند آیدی (target ممکن است از متن یا ریپلای باشد)
-    if cmd in ("بن", "سکوت", "اخطار"):
+    # اعتبارسنجی دستورات نیازمند آیدی
+    if cmd in ("بن", "سکوت"):
         valid, msg = is_valid_target(chat_id, target, sender_id)
         if not valid:
             await event.reply(msg)
@@ -438,14 +483,20 @@ async def handle_all(event):
         save_group(chat_id, group)
 
     elif cmd == "رفع" and len(parts) > 1 and parts[1] == "بن":
-        uid = target if target else (int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None)
+        uid = target
+        if uid is None and len(parts) > 2 and parts[2].isdigit():
+            uid = int(parts[2])
+        
         if uid:
             success, _ = await unban_user(client, chat_id, uid)
-            if success and uid in group["bans"]:
-                group["bans"].remove(uid)
-            await event.reply("✅ کاربر از بن خارج شد." if success else "❌ رفع بن ناموفق بود.")
+            if success:
+                if uid in group["bans"]:
+                    group["bans"].remove(uid)
+                await event.reply(f"✅ کاربر {uid} از بن خارج شد.")
+            else:
+                await event.reply("❌ رفع بن ناموفق بود.")
         else:
-            await event.reply("❌ آیدی نامعتبر است.")
+            await event.reply("❌ لطفاً آیدی کاربر را وارد کنید یا روی پیام او ریپلای کنید.")
         save_group(chat_id, group)
 
     elif cmd == "سکوت" and target:
@@ -454,21 +505,15 @@ async def handle_all(event):
         save_group(chat_id, group)
 
     elif cmd == "رفع" and len(parts) > 1 and parts[1] == "سکوت":
-        uid = target if target else (int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None)
+        uid = target
+        if uid is None and len(parts) > 2 and parts[2].isdigit():
+            uid = int(parts[2])
+        
         if uid and str(uid) in group["mutes"]:
             del group["mutes"][str(uid)]
-            await event.reply("🔊 سکوت کاربر برداشته شد.")
+            await event.reply(f"🔊 سکوت کاربر {uid} برداشته شد.")
         else:
             await event.reply("❌ کاربر سکوت نشده یا آیدی نامعتبر.")
-        save_group(chat_id, group)
-
-    elif cmd == "حذف" and len(parts) > 1 and parts[1] == "اخطار":
-        uid = target if target else (int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None)
-        if uid and str(uid) in group["warnings"]:
-            group["warnings"][str(uid)] = max(0, group["warnings"][str(uid)] - 1)
-            await event.reply(f"♻️ یک اخطار کم شد (کاربر {uid}).")
-        else:
-            await event.reply("❌ کاربر اخطار ندارد یا آیدی نامعتبر.")
         save_group(chat_id, group)
 
     elif cmd == "سنجاق":
@@ -491,7 +536,6 @@ async def handle_all(event):
     # --- پاکسازی پیام‌ها ---
     elif cmd == "پاک" and len(parts) > 1:
         if parts[1] == "همه":
-            # فقط OWNER_ID مجاز به پاک کردن همه پیام‌هاست
             if sender_id != OWNER_ID:
                 await event.reply("⛔ فقط مالک اصلی ربات می‌تواند همه پیام‌ها را پاک کند.")
                 return
@@ -507,7 +551,6 @@ async def handle_all(event):
         elif parts[1].isdigit():
             count = int(parts[1])
             if 0 < count <= 100:
-                # برای پاک کردن تعداد مشخص، ادمین‌ها و مالک‌ها مجازند
                 if not is_admin(chat_id, sender_id):
                     await event.reply("⛔ شما دسترسی لازم برای این دستور را ندارید.")
                     return
@@ -537,7 +580,7 @@ async def handle_all(event):
         if cmd == "قفل":
             group["locks"][lock_key] = True
             await event.reply(f"🔒 قفل {lock_persian} فعال شد.")
-        else:  # بازکردن
+        else:
             group["locks"][lock_key] = False
             await event.reply(f"🔓 قفل {lock_persian} باز شد.")
         save_group(chat_id, group)
@@ -551,9 +594,9 @@ async def handle_all(event):
             await event.reply("❌ لطفاً کلمه را مشخص کنید. مثال: فیلتر تبلیغ")
             return
         word = parts[1]
-        punishment = "warn"
-        if len(parts) > 2 and parts[2] in ("بن", "سکوت", "اخطار"):
-            punishment = {"بن": "ban", "سکوت": "mute", "اخطار": "warn"}[parts[2]]
+        punishment = "mute"
+        if len(parts) > 2 and parts[2] in ("بن", "سکوت"):
+            punishment = {"بن": "ban", "سکوت": "mute"}[parts[2]]
         group["filters"][word] = punishment
         await event.reply(f"✅ کلمه «{word}» با مجازات {punishment} فیلتر شد.")
         save_group(chat_id, group)
@@ -574,7 +617,7 @@ async def handle_all(event):
             save_group(chat_id, group)
 
     elif cmd == "لیست" and len(parts) > 1 and parts[1] == "فیلتر":
-        if not is_admin(chat_id, sender_id):  # حتی ادمین هم می‌تونه لیست رو ببینه
+        if not is_admin(chat_id, sender_id):
             await event.reply("⛔ دسترسی ندارید.")
             return
         if group["filters"]:
@@ -655,13 +698,14 @@ async def handle_all(event):
                 await event.reply("❌ استفاده: آمار | آمار روشن | آمار خاموش | آمار گروه")
         save_group(chat_id, group)
 
-    # --- مدیریت مالک/ادمین (با پشتیبانی از ریپلای) ---
+    # --- مدیریت مالک/ادمین/سفید ---
     elif cmd in ("افزودن", "حذف") and len(parts) > 1:
+        # چک کردن دسترسی
         if not is_owner(chat_id, sender_id):
-            await event.reply("⛔ فقط مالک اصلی می‌تواند مالک/ادمین اضافه کند.")
+            await event.reply("⛔ شما دسترسی لازم برای این دستور را ندارید.")
             return
         
-        # اگر target نداریم و ریپلای شده، از ریپلای بگیر
+        # استخراج target
         if target is None and event.message.reply_to_msg_id:
             try:
                 reply_msg = await client.get_messages(chat_id, ids=event.message.reply_to_msg_id)
@@ -670,50 +714,100 @@ async def handle_all(event):
             except:
                 pass
         
-        # اگر باز هم target نداریم، خطا بده
         if target is None:
             await event.reply("❌ لطفاً آیدی کاربر را وارد کنید یا روی پیام او ریپلای کنید.")
             return
         
         role = parts[1]
-        if role not in ("مالک", "ادمین"):
-            await event.reply("❌ استفاده: افزودن مالک 123456 / افزودن ادمین 123456")
+        
+        # ===== مدیریت لیست سفید - فقط OWNER_ID =====
+        if role == "سفید":
+            if sender_id != OWNER_ID:
+                await event.reply("⛔ فقط مالک اصلی ربات می‌تواند لیست سفید را مدیریت کند.")
+                return
+            
+            if cmd == "افزودن":
+                if target not in group["whitelist"]:
+                    group["whitelist"].append(target)
+                    await event.reply(f"✅ کاربر {target} به لیست سفید اضافه شد.")
+                else:
+                    await event.reply("❌ کاربر قبلاً در لیست سفید است.")
+            else:  # حذف
+                if target in group["whitelist"]:
+                    group["whitelist"].remove(target)
+                    await event.reply(f"❌ کاربر {target} از لیست سفید حذف شد.")
+                else:
+                    await event.reply("❌ کاربر در لیست سفید نیست.")
+            save_group(chat_id, group)
             return
         
-        # جلوگیری از تغییر نقش OWNER_ID
-        if target == OWNER_ID:
-            await event.reply("❌ نمی‌توانید مالک اصلی ربات را تغییر دهید.")
-            return
-        
-        if cmd == "افزودن":
-            if role == "مالک":
+        # ===== مدیریت مالک - فقط OWNER_ID =====
+        if role == "مالک":
+            if sender_id != OWNER_ID:
+                await event.reply("⛔ فقط مالک اصلی ربات می‌تواند مالک اضافه یا حذف کند.")
+                return
+            
+            if target == OWNER_ID:
+                await event.reply("❌ نمی‌توانید مالک اصلی ربات را تغییر دهید.")
+                return
+            
+            if cmd == "افزودن":
                 if target not in group["owners"]:
                     group["owners"].append(target)
-                    await event.reply(f"👑 کاربر {target} به مالک اضافه شد.")
+                    # اضافه کردن خودکار به لیست سفید
+                    if target not in group["whitelist"]:
+                        group["whitelist"].append(target)
+                    await event.reply(f"👑 کاربر {target} به مالک اضافه شد و به لیست سفید افزوده شد.")
                 else:
                     await event.reply("❌ کاربر قبلاً مالک است.")
-            else:  # ادمین
+            else:  # حذف
+                if target in group["owners"]:
+                    group["owners"].remove(target)
+                    # حذف از لیست سفید
+                    if target in group["whitelist"]:
+                        group["whitelist"].remove(target)
+                    await event.reply(f"❌ کاربر {target} از مالکیت حذف شد و از لیست سفید خارج شد.")
+                else:
+                    await event.reply("❌ کاربر در لیست مالکان نیست.")
+            save_group(chat_id, group)
+            return
+        
+        # ===== مدیریت ادمین - مالک‌ها و OWNER_ID =====
+        if role == "ادمین":
+            if target == OWNER_ID:
+                await event.reply("❌ نمی‌توانید مالک اصلی ربات را تغییر دهید.")
+                return
+            
+            if cmd == "افزودن":
                 if target not in group["admins"]:
                     group["admins"].append(target)
                     await event.reply(f"🛡 کاربر {target} به ادمین اضافه شد.")
                 else:
                     await event.reply("❌ کاربر قبلاً ادمین است.")
-        else:  # حذف
-            if role == "مالک":
-                if target in group["owners"]:
-                    group["owners"].remove(target)
-                    await event.reply(f"❌ کاربر {target} از مالکیت حذف شد.")
-                else:
-                    await event.reply("❌ کاربر در لیست مالکان نیست.")
-            else:  # ادمین
+            else:  # حذف
                 if target in group["admins"]:
                     group["admins"].remove(target)
                     await event.reply(f"❌ ادمین {target} حذف شد.")
                 else:
                     await event.reply("❌ کاربر در لیست ادمین‌ها نیست.")
-        save_group(chat_id, group)
+            save_group(chat_id, group)
+            return
+        
+        # اگر role نامعتبر بود
+        await event.reply("❌ استفاده: افزودن مالک/ادمین/سفید 123456")
 
-    # اگر دستوری بود که شناخته نشد ولی به نظر ادمین/مالک است
+    # --- لیست سفید (نمایش) ---
+    elif cmd == "لیست" and len(parts) > 1 and parts[1] == "سفید":
+        if not is_admin(chat_id, sender_id):
+            await event.reply("⛔ دسترسی ندارید.")
+            return
+        
+        if group["whitelist"]:
+            txt = "\n".join([f"🆔 {uid}" for uid in group["whitelist"]])
+            await event.reply(f"📝 لیست سفید:\n{txt}")
+        else:
+            await event.reply("📝 لیست سفید خالی است.")
+
     else:
         return
 
